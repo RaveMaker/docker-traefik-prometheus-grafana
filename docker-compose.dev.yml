@@ -1,0 +1,125 @@
+version: '3.7'
+
+services:
+
+  traefik:
+    image: traefik:latest
+    command:
+      - '--configFile=/conf/traefik.toml'
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+    networks:
+      - proxy
+      - frontend
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./conf:/conf:ro
+      - ./certs:/certs:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${podName}.rule=Host(`${hostRule}`)
+      - traefik.http.routers.${podName}.service=api@internal
+      - traefik.http.routers.${podName}.entrypoints=websecure
+      - traefik.http.services.${podName}.loadbalancer.server.port=8080
+      - traefik.http.routers.${podName}.middlewares=${podName}-auth
+      - traefik.http.middlewares.${podName}-auth.basicauth.users=${traefikUser}:${traefikPass}
+    # Deploy block for docker swarm mode only - ignored by docker-compose
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.role == manager]
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.${podName}.rule=Host(`${hostRule}`)
+        - traefik.http.routers.${podName}.service=api@internal
+        - traefik.http.routers.${podName}.entrypoints=websecure
+        - traefik.http.services.${podName}.loadbalancer.server.port=8080
+        - traefik.http.routers.${podName}.middlewares=${podName}-auth
+        - traefik.http.middlewares.${podName}-auth.basicauth.users=${traefikUser}:${traefikPass}
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus/:/etc/prometheus/
+      - ./prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${podName}-prometheus.rule=Host(`${hostRuleProm}`)
+      - traefik.http.routers.${podName}-prometheus.entrypoints=websecure
+      - traefik.http.routers.${podName}-prometheus.service=traefik-prometheus
+      - traefik.http.services.${podName}-prometheus.loadbalancer.server.port=9090
+      - traefik.http.routers.${podName}-prometheus.middlewares=${podName}-prometheus-auth
+      - traefik.http.middlewares.${podName}-prometheus-auth.basicauth.users=${traefikUser}:${traefikPass}
+      - traefik.docker.network=${podName}_frontend
+    networks:
+      - frontend
+    # Deploy block for docker swarm mode only - ignored by docker-compose
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.${podName}-prometheus.rule=Host(`${hostRuleProm}`)
+        - traefik.http.routers.${podName}-prometheus.entrypoints=websecure
+        - traefik.http.routers.${podName}-prometheus.service=traefik-prometheus
+        - traefik.http.services.${podName}-prometheus.loadbalancer.server.port=9090
+        - traefik.http.routers.${podName}-prometheus.middlewares=${podName}-prometheus-auth
+        - traefik.http.middlewares.${podName}-prometheus-auth.basicauth.users=${traefikUser}:${traefikPass}
+        - traefik.docker.network=${podName}_frontend
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+
+  grafana:
+    image: grafana/grafana
+    depends_on:
+      - prometheus
+    volumes:
+      - ./grafana_data:/var/lib/grafana
+      - ./grafana/:/etc/grafana/provisioning/
+    environment:
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${podName}-grafana.rule=Host(`${hostRuleGrafana}`)
+      - traefik.http.routers.${podName}-grafana.entrypoints=websecure
+      - traefik.http.routers.${podName}-grafana.service=traefik-grafana
+      - traefik.http.services.${podName}-grafana.loadbalancer.server.port=3000
+      - traefik.docker.network=${podName}_frontend
+    networks:
+      - frontend
+    user: "104"
+    # Deploy block for docker swarm mode only - ignored by docker-compose
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.${podName}-grafana.rule=Host(`${hostRuleGrafana}`)
+        - traefik.http.routers.${podName}-grafana.entrypoints=websecure
+        - traefik.http.routers.${podName}-grafana.service=traefik-grafana
+        - traefik.http.services.${podName}-grafana.loadbalancer.server.port=3000
+        - traefik.docker.network=${podName}_frontend
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+
+networks:
+  proxy:
+    external: false
+    name: proxy
+  frontend:
+    driver: overlay
+    attachable: true
